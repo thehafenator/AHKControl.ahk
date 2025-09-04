@@ -47,7 +47,7 @@ I also prefer this look without the numbering.
 ;     }
 ; }
 
-SetWorkingDir A_ScriptDir "\Macropad\Icons"
+
 try {
     isDarkMode := RegRead("HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme") = 0
     if (isDarkMode)
