@@ -90,13 +90,12 @@ class TrayManager {
     static WM_RBUTTONDOWN := 0x204
     static WM_RBUTTONUP := 0x205
     static editAction := ""
-    static excludedScripts := [
-        ; "Prompt Assistant.exe",
-        "Move Window.ahk",
-        "DimScreen.ahk",
-        "Toggle Between Monitors.ahk",   
-        ; "AHKControl.ahk",
-    ]
+        static excludedScripts := [
+        "launcher.ahk",
+        "AHK Scripts.ahk", 
+        "AutoHotkeyUX.exe",
+        "Run AHK Scripts.ahk"
+        ]
     static commands := Map(
         "Open", 65300,
         "Help", 65301,
@@ -151,51 +150,102 @@ class TrayManager {
             this.scriptStates[pid].suspended := !this.scriptStates[pid].suspended
     }
 
-    static GetRunningAHKScripts() {
-        scripts := []
-        processQuery := "Select ProcessId, CommandLine from Win32_Process Where Name LIKE 'AutoHotkey%'"
-        wmi := ComObject("WbemScripting.SWbemLocator").ConnectServer()
-        
-        for process in wmi.ExecQuery(processQuery) {
-            try {
-                cmdLine := process.CommandLine
-                if (!InStr(cmdLine, ".ahk"))
-                    continue
-
-                scriptPath := this.GetScriptPathFromCmd(cmdLine)
-                if (!scriptPath)
-                    continue
-
-                scriptName := this.GetScriptNameFromPath(scriptPath)
-                if (this.ShouldExcludeScript(scriptName))
-                    continue
-
-                DetectHiddenWindows(true)
-                hwnd := WinExist("ahk_pid " process.ProcessId " ahk_class AutoHotkey")
-                if (!hwnd)
-                    continue
-
-                state := this.GetScriptState(hwnd)
+   static GetRunningAHKScripts() {
+    scripts := []
+    DetectHiddenWindows(true)
+    
+    ; Get all windows with the AutoHotkey class (both .ahk and .exe)
+    winList := WinGetList("ahk_class AutoHotkey")
+    
+    for hwnd in winList {
+        try {
+            ; Get the process path for the window
+            pid := WinGetPID(hwnd)
+            processPath := ProcessGetPath(pid)
+            
+            ; Skip if the process path is empty or doesn't exist
+            if (!processPath || !FileExist(processPath))
+                continue
+            
+            ; Get the full window title which contains the script path
+            fullTitle := WinGetTitle(hwnd)
+            foundName := false
+            scriptPath := ""  ; Initialize scriptPath variable
+            
+            ; For standard AutoHotkey interpreters
+            if (InStr(processPath, "AutoHotkey") && (InStr(processPath, "AutoHotkeyU64.exe") || 
+                InStr(processPath, "AutoHotkeyU32.exe") || InStr(processPath, "AutoHotkey64.exe") || 
+                InStr(processPath, "AutoHotkey32.exe") || InStr(processPath, "AutoHotkey64_UIA.exe"))) {
                 
-                ; Use tracked states if available, otherwise use detected states
-                if (this.scriptStates.Has(process.ProcessId)) {
-                    state := this.scriptStates[process.ProcessId]
-                } else {
-                    this.scriptStates[process.ProcessId] := state
+                ; Extract the script path from the window title
+                if (RegExMatch(fullTitle, "^(.*) - AutoHotkey(?: v[0-9\.]+)?$", &match)) {
+                    scriptPath := match[1]
+                    
+                    ; Skip if the script path doesn't exist
+                    if (FileExist(scriptPath)) {
+                        ; Get the script name for display
+                        SplitPath(scriptPath, &scriptName)
+                        foundName := true
+                    }
                 }
-
-                scripts.Push({
-                    pid: process.ProcessId,
-                    name: scriptName,
-                    path: scriptPath,
-                    hwnd: hwnd,
-                    paused: state.paused,
-                    suspended: state.suspended
-                })
             }
+            
+            ; For compiled .exe scripts or fallback
+            if (!foundName) {
+                ; For elevated scripts, still try to keep track of the actual .ahk file
+                if (InStr(processPath, "AutoHotkey64_UIA.exe")) {
+                    ; Try to extract from window title again as a fallback
+                    if (RegExMatch(fullTitle, "^(.*\.ahk)", &match)) {
+                        possiblePath := match[1]
+                        if (FileExist(possiblePath)) {
+                            scriptPath := possiblePath
+                            SplitPath(scriptPath, &scriptName)
+                            foundName := true
+                        }
+                    }
+                    
+                    if (!foundName) {
+                        scriptName := "UIA_Script_" pid  ; Generic fallback
+                    }
+                } else {
+                    ; Get script name from process path for compiled scripts
+                    SplitPath(processPath, &scriptName)
+                    scriptPath := processPath
+                    foundName := true
+                }
+            }
+            
+            if (!foundName) {
+                ; Last fallback - just use the PID
+                scriptName := "AHK_Script_" pid
+                scriptPath := processPath
+            }
+            
+            if (this.ShouldExcludeScript(scriptName))
+                continue
+            
+            ; Get the script state
+            state := this.GetScriptState(hwnd)
+            
+            if (this.scriptStates.Has(pid)) {
+                state := this.scriptStates[pid]
+            } else {
+                this.scriptStates[pid] := state
+            }
+
+            scripts.Push({
+                pid: pid,
+                name: scriptName,
+                path: scriptPath,  ; Store the actual script path when available
+                processPath: processPath,  ; Also store the process path separately
+                hwnd: hwnd,
+                paused: state.paused,
+                suspended: state.suspended
+            })
         }
-        return scripts
     }
+    return scripts
+}
 
     static ShouldExcludeScript(scriptName) {
         for excludedScript in this.excludedScripts {
@@ -407,35 +457,60 @@ class TrayManager {
         return ""
     }
 
-    static EditScriptFile(scriptPath) {
-        if (scriptPath = "")
-            return
-            
-        try {
-            editorpath := A_AppData "\..\Local\Programs\Microsoft VS Code\Code.exe"
-            if FileExist(editorpath) {
-                Run('"' editorpath '" "' scriptPath '"')
-                return
-            }
-        }
-            
-        if (this.editAction != "") {
-            action := StrReplace(this.editAction, "$SCRIPT_PATH", scriptPath)
-            try {
-                Run(action)
-                return
-            }
-        }
+ static EditScriptFile(scriptPath) {
+    if (scriptPath = "")
+        return
         
-        try {
-            Run("edit " scriptPath)
-            return
-        }
-        
-        try {
-            Run('notepad.exe "' scriptPath '"')
+    ; Check if this is an .exe file and look for a corresponding .ahk file
+    SplitPath(scriptPath, &fileName, &scriptDir, &fileExt, &fileNameNoExt)
+    
+    ; Special handling for AutoHotkey64_UIA.exe
+    if (InStr(scriptPath, "AutoHotkey64_UIA.exe")) {
+        ; Try to find the actual script being run by looking at command line arguments
+        for hwnd in WinGetList("ahk_exe AutoHotkey64_UIA.exe") {
+            pid := WinGetPID(hwnd)
+            ; Try to get window title which often contains script path
+            fullTitle := WinGetTitle(hwnd)
+            if (RegExMatch(fullTitle, "^(.*) - AutoHotkey(?: v[0-9\.]+)?$", &match)) {
+                scriptPath := match[1]
+                if (FileExist(scriptPath)) {
+                    break  ; Found the script, exit the loop
+                }
+            }
         }
     }
+    ; If it's an .exe file, check if there's a matching .ahk file in the same directory
+    else if (fileExt = "exe") {
+        ahkPath := scriptDir "\" fileNameNoExt ".ahk"
+        if (FileExist(ahkPath))
+            scriptPath := ahkPath  ; Use the .ahk file instead
+    }
+        
+    try {
+        editorpath := A_AppData "\..\Local\Programs\Microsoft VS Code\Code.exe"
+        if FileExist(editorpath) {
+            Run('"' editorpath '" "' scriptPath '"')
+            return
+        }
+    }
+        
+    if (this.editAction != "") {
+        action := StrReplace(this.editAction, "$SCRIPT_PATH", scriptPath)
+        try {
+            Run(action)
+            return
+        }
+    }
+    
+    try {
+        Run("edit " scriptPath)
+        return
+    }
+    
+    try {
+        Run('notepad.exe "' scriptPath '"')
+    }
+}
 
     static ShowOriginalTrayMenu(targetPID) {
         DetectHiddenWindows(true)
