@@ -51,12 +51,12 @@ SetWorkingDir A_ScriptDir "\Macropad\Icons"
 try {
     isDarkMode := RegRead("HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme") = 0
     if (isDarkMode)
-        TraySetIcon A_ScriptDir "\Macropad\Icons\macropaddark.ico"
+        TraySetIcon A_ScriptDir "\Icons\macropaddark.ico"
     else
-        TraySetIcon A_ScriptDir "\Macropad\Icons\macropad.ico"
+        TraySetIcon A_ScriptDir "\Icons\macropad.ico"
 } catch {
     try{
-        TraySetIcon A_ScriptDir "\Macropad\Icons\macropad.ico"
+        TraySetIcon A_ScriptDir "\Icons\macropad.ico"
     }
     }
  
